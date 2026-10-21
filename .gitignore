@@ -1,0 +1,12 @@
+*.runs/
+*.gen/
+*.cache/
+*.ip_user_files/
+*.sim/
+*.hw/
+xsim.dir/
+.Xil/
+*.jou
+*.log
+*.wdb
+*.zip
