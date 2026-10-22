@@ -1,134 +1,35 @@
-# Módem QPSK sobre RFSoC 4x2
+# TFG - Módem QPSK en la RFSoC 4x2
 
-Módem QPSK completo implementado en la lógica programable (PL) de una placa **RFSoC 4x2** (AMD Zynq UltraScale+ RFSoC XCZU48DR), con prueba en lazo cerrado DAC → cable SMA → ADC dentro de la misma placa.
+Código de mi Trabajo Fin de Grado: un módem QPSK implementado en la FPGA de la placa RFSoC 4x2 (Zynq UltraScale+ RFSoC XCZU48DR). El transmisor y el receptor están en la lógica programable y se prueban en lazo, sacando la señal por el DAC y volviéndola a meter por el ADC con un cable.
 
-El repositorio contiene las dos versiones desarrolladas en el Trabajo Fin de Grado:
+Hay dos versiones:
 
-| Versión | Enlace analógico | Frecuencia de muestreo | Cables |
-|---|---|---|---|
-| **Banda base** | I y Q como dos señales reales en banda base | 1 GSPS | 2 (DAC A → ADC, DAC B → ADC) |
-| **Portadora de 1 GHz** | I/Q sobre una portadora de 1,000 GHz (mezcladores del RF Data Converter) | 4 GSPS | 1 (DAC A → ADC) |
+- **Banda base:** I y Q salen por dos DAC distintos y vuelven por dos ADC, con dos cables. Convertidores a 1 GSPS.
+- **Portadora de 1 GHz:** el RF Data Converter sube I/Q a 1 GHz con su NCO y lo vuelve a bajar en el ADC, con un solo cable. Convertidores a 4 GSPS. En las pruebas en placa el enlace da BER 0.
 
-> Autor: Rubén Mata Alonso · Trabajo Fin de Grado · Universidad autonoma de Madrid, Ingenieria en Tecnologias de la Telecomunicación, Curso 26/27
-> Memoria completa: [`docs/`](docs/)
+El resto de la cadena es igual en las dos: PRBS-15 o secuencia fija → modulador QPSK con filtro RRC → DAC → ADC → filtro adaptado → sincronismo de símbolo (Gardner) → lazo de Costas → decisión → medidor de BER.
 
----
+## Carpetas
 
-## Arquitectura
+- `rtl/common/`: código común a las dos versiones (transmisor, receptor, generadores de datos y medidor de BER).
+- `rtl/baseband/` y `rtl/carrier_1ghz/`: lo que cambia entre versiones. El paquete `qpsk_coef_pkg.sv` (amplitud `A_SYM` de 4000 en banda base y de 10000 a 1 GHz) y, en la de 1 GHz, `iq_pack.v`, que junta I y Q en una sola palabra para el DAC.
+- `sim/`: testbenches.
+- `vivado/`: block design de cada versión y restricciones (`mts.xdc`).
+- `model/`: modelo en Python que usé para validar el algoritmo y sacar los coeficientes del filtro RRC.
+- `matlab/`: scripts para analizar las capturas del ILA.
+- `pynq/`: notebook para manejar la placa.
+- `docs/`: memoria del TFG y guía del paso a 1 GHz.
 
-```mermaid
-flowchart LR
-    G["PRBS-15 / secuencia fija<br/>(Generador_PRBS, SEQ_core, dibit_mux)"] --> TX["Modulador QPSK<br/>mapeo ±A_SYM + RRC (OSR 4)<br/>qpsk_tx_core"]
-    TX --> P["iq_pack<br/>(solo 1 GHz)"]
-    P --> DAC["RF-DAC<br/>interpolación + NCO"]
-    DAC -- "cable SMA" --> ADC["RF-ADC<br/>NCO + decimación"]
-    ADC --> MF["Filtro adaptado RRC<br/>rrc_mf (I y Q)"]
-    MF --> GA["Sincronismo de símbolo<br/>Gardner (simple_gardner)"]
-    GA --> RX["Lazo de Costas + decisión<br/>qpsk_rx_core"]
-    RX --> BER["Medidor de BER PRBS-15<br/>ber_checker_axi_lite"]
-```
+## Cómo usarlo
 
-Todo el procesado digital corre en la PL a **250 MHz**. El Zynq (PS) solo configura y lee resultados desde PYNQ por AXI-Lite.
+Está hecho con Vivado 2024.1 (part `xczu48dr-ffvg1517-2-e`). Para regenerar el proyecto hay que crear un proyecto nuevo, añadir `rtl/common` y la carpeta de la versión, añadir `mts.xdc` y cargar el block design de `vivado/`. Después se crea el wrapper y se genera el bitstream.
 
-## Estructura del repositorio
+En la placa uso PYNQ: se ponen los relojes a 500 MHz (`xrfclk.set_ref_clks(500.0, 500.0)`), se carga el overlay y se leen los contadores del medidor de BER en `0x80010000`. El selector entre PRBS y secuencia fija es el GPIO de `0x80070000`.
 
-```text
-rtl/
-├── common/                 RTL compartido por las dos versiones
-│   ├── tx/                 qpsk_tx_core.sv, simple_tx_axis.v, rrc_fir.sv
-│   ├── rx/                 rrc_mf.sv, rrc_mf_top.v, gardner_ted.sv, simple_gardner.v,
-│   │                       qpsk_rx_core.sv, simple_rx_axis.v, nco_lut_pkg.sv
-│   ├── generadores/        Generador_PRBS.v, SEQ_core.v, dibit_mux.v
-│   └── ber/                prbs_ber_check.sv, prbs_ber_check_auto.sv, ber_checker_axi_lite.v
-├── baseband/               qpsk_coef_pkg.sv  (A_SYM = 4000)
-└── carrier_1ghz/           qpsk_coef_pkg.sv  (A_SYM = 10000), iq_pack.v
-sim/                        testbenches (XSim)
-vivado/
-├── constraints/            mts.xdc
-├── baseband/               mts_bd.tcl, mts.bd
-└── carrier_1ghz/           mts_bd.tcl, mts.bd
-model/                      modelo de referencia en Python (algoritmo, coeficientes, Costas)
-pynq/                       notebooks de prueba en placa
-matlab/                     análisis de capturas ILA
-docs/                       memoria y guía de la portadora de 1 GHz
-```
+## Notas
 
-Los bitstreams (`mts.bit` + `mts.hwh`) de cada versión están en **Releases** (`v1.0-banda-base` y `v2.0-portadora-1ghz`).
+- `Generador_PRBS.v` contiene el módulo `PRBS_core`.
+- A 1 GHz el NCO del DAC va a +1 GHz y el del ADC a −1 GHz.
+- El diseño parte del proyecto [RFSoC-MTS](https://github.com/Xilinx/RFSoC-MTS) de AMD/Xilinx, del que vienen el `mts.xdc` y la parte de relojes del block design.
 
-### Módulos
-
-| Fichero | Función |
-|---|---|
-| `Generador_PRBS.v` | Generador PRBS-15 de 2 bits por símbolo. **Declara el módulo `PRBS_core`.** Avanza solo con `en` (= `tx_sym_load`). |
-| `SEQ_core.v` | Secuencia fija de 32 símbolos para depuración, al mismo ritmo de símbolo. |
-| `dibit_mux.v` | Selecciona PRBS o secuencia fija (GPIO). |
-| `qpsk_tx_core.sv` / `simple_tx_axis.v` | Mapeo a ±A_SYM, inserción de ceros ×4 y conformado RRC en I y Q. Envoltorio Verilog para IP Integrator. |
-| `rrc_fir.sv` | FIR RRC en forma transpuesta (cascada de DSP). |
-| `iq_pack.v` | Solo 1 GHz. Empaqueta I y Q en `{Q[31:16], I[15:0]}` para el DAC en modo I/Q→Real. |
-| `rrc_mf.sv` / `rrc_mf_top.v` | Filtro adaptado RRC de 65 coeficientes, 4 carriles, árbol de sumadores segmentado. |
-| `gardner_ted.sv` / `simple_gardner.v` | Detector de Gardner y lazo de sincronismo; entrega 1 muestra por símbolo. `loop_inv` controlable por GPIO. |
-| `qpsk_rx_core.sv` / `simple_rx_axis.v` | Derrotación con tabla de senos, lazo de Costas y decisión `{signo(Q), signo(I)}`. |
-| `prbs_ber_check.sv` | Comprobador PRBS-15 autosincronizante con integrador de errores con fuga. |
-| `prbs_ber_check_auto.sv` | Cuatro comprobadores (0°, 90°, 180°, 270°); se queda con el que engancha. |
-| `ber_checker_axi_lite.v` | Envoltorio AXI-Lite del medidor de BER. |
-| `qpsk_coef_pkg.sv` | Parámetros y coeficientes RRC, generados con `model/qpsk_model.py`. `A_SYM` se ajustó después a mano (4000 y 10000). |
-
-### Modelo de referencia en Python (`model/`)
-
-Scripts en Python puro, usados para validar los algoritmos antes de pasarlos a RTL.
-
-| Fichero | Función |
-|---|---|
-| `qpsk_model.py` | Modelo de referencia del módem en banda base: mapeo, RRC, filtro adaptado y decisión. Genera los coeficientes RRC cuantizados que usa el RTL. |
-| `qpsk_costas_fixed.py` | Lazo de Costas en punto fijo, réplica del RTL (acumulador de 32 bits, tabla de senos, `KP`/`KI` enteros). |
-| `qpsk_sync_model.py` | Recuperación de portadora con desfase, deriva de frecuencia, ruido AWGN y retardo fraccionario. |
-| `qpsk_passband_model.py` | QPSK en banda pasante sobre un solo canal real (subida y bajada con NCO). |
-| `plot_constelacion.py`, `plot_from_csv.py`, `ver_constelacion_ila.py` | Dibujan constelaciones en SVG a partir del modelo, de la simulación o de un CSV exportado del ILA. |
-
----
-
-## Reconstruir el proyecto en Vivado
-
-Probado con **Vivado 2024.1**, part `xczu48dr-ffvg1517-2-e`.
-
-1. Crea un proyecto RTL vacío para ese part.
-2. Añade como fuentes de diseño todo `rtl/common/` y la carpeta de la versión que quieras (`rtl/baseband/` o `rtl/carrier_1ghz/`). Los módulos tienen que estar en el proyecto antes del paso 4, porque el block design los usa como *module references*.
-3. Añade `vivado/constraints/mts.xdc` como restricciones.
-4. En la Tcl Console: `source vivado/<versión>/mts_bd.tcl`. Crea el block design `mts`.
-5. Sources → clic derecho en `mts.bd` → **Create HDL Wrapper** y fíjalo como top.
-6. **Generate Bitstream**. El `.bit` queda en `<proyecto>.runs/impl_1/mts_wrapper.bit` y el `.hwh` en `<proyecto>.gen/sources_1/bd/mts/hw_handoff/mts.hwh`. Cópialos juntos con el mismo nombre base (`mts.bit` / `mts.hwh`).
-
-### Simulación
-
-Los testbenches de `sim/` se ejecutan en XSim añadiendo `rtl/common/` y el `qpsk_coef_pkg.sv` de una de las dos versiones.
-
-| Testbench | Qué comprueba |
-|---|---|
-| `tb_tx_core.sv`, `tx_tesbench.sv` | Modulador: mapeo, sobremuestreo y conformado RRC |
-| `tb_rrc_mf.sv` | Filtro adaptado RRC |
-| `tb_gardner.sv` | Convergencia del lazo de Gardner desde una fase descolocada |
-| `tb_prbs_ber.sv` | Comprobador PRBS-15 con rotaciones de fase |
-| `tb_prbs_direct.sv` | Generador PRBS conectado directamente al medidor de BER con autorrotación |
-
----
-
-### Secuencia
-
-1. Copia a la placa `mts.bit` y `mts.hwh` de la versión (desde Releases).
-2. Programa los relojes a 500 MHz: `xrfclk.set_ref_clks(lmk_freq=500.0, lmx_freq=500.0)`.
-3. Carga el overlay y sincroniza los tiles (MTS), como en el notebook de `pynq/`.
-4. Elige los datos de prueba y lee el BER:
-
-## Resultados
-
-- **Banda base:** la cadena completa decodifica la secuencia fija al 100 % en las cinco etapas analizadas con ILA (generador, TX, ADC, filtro adaptado y símbolo decidido), y el receptor recupera el PRBS-15 transmitido.
-- **Portadora de 1 GHz:** enlace funcionando con la portadora a 1,000 GHz, constelación sin espejo con el NCO del ADC a −1 GHz y **BER = 0** medido con el `ber_checker` en placa. <!-- Opcional: añade aquí el número de bits de tu medida -->
-
-La memoria del TFG (en `docs/`) detalla el diseño, la depuración y las medidas.
-
----
-
-## Créditos
-
-- El fichero `vivado/constraints/mts.xdc` y la base del block design derivan de [Xilinx/RFSoC-MTS](https://github.com/Xilinx/RFSoC-MTS), © 2023 Advanced Micro Devices.
-
+Rubén Mata Alonso - Universidad Autonoma de Madrid - Grado en Ingeniería de Tecnologías y Servicios de Telecomunicación
